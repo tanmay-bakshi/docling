@@ -25,11 +25,12 @@ class EasyOcrModel(BaseOcrModel):
         if self.enabled:
             try:
                 import easyocr
-            except ImportError:
+            except ImportError as e:
                 raise ImportError(
-                    "EasyOCR is not installed. Please install it via `pip install easyocr` to use this OCR engine. "
+                    "EasyOCR is not installed or failed to import properly. "
+                    "Please install it via `pip install easyocr` to use this OCR engine. "
                     "Alternatively, Docling has support for other OCR engines. See the documentation."
-                )
+                ) from e
 
             self.reader = easyocr.Reader(
                 lang_list=self.options.lang,
