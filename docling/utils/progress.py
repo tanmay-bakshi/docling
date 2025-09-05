@@ -139,6 +139,7 @@ class RichProgressReporter(ProgressReporter):
             TaskID,
             TaskProgressColumn,
             TextColumn,
+            TimeElapsedColumn,
             TimeRemainingColumn,
         )
 
@@ -152,6 +153,7 @@ class RichProgressReporter(ProgressReporter):
             self._TextColumn("{task.description}"),
             self._BarColumn(bar_width=None),
             self._TaskProgressColumn(),
+            TimeElapsedColumn(),
             self._TimeRemainingColumn(),
             expand=True,
             transient=False,
@@ -184,6 +186,10 @@ class RichProgressReporter(ProgressReporter):
                 self._run_task = self._progress.add_task(
                     "Documents", total=total
                 )
+                try:
+                    self._progress.refresh()
+                except Exception:
+                    self._log.debug("Failed to refresh after start_run.\n%s", traceback.format_exc())
 
     def end_run(self) -> None:
         """Finish the conversion run and stop rendering.
@@ -201,6 +207,10 @@ class RichProgressReporter(ProgressReporter):
                         self._progress.update(self._run_task, completed=total)
             # Stop rendering
             if self._started:
+                try:
+                    self._progress.refresh()
+                except Exception:
+                    self._log.debug("Failed to refresh before end_run stop.\n%s", traceback.format_exc())
                 self._progress.stop()
                 self._started = False
 
@@ -251,6 +261,10 @@ class RichProgressReporter(ProgressReporter):
                 self._stage_tasks[key] = self._progress.add_task(
                     desc, total=total
                 )
+                try:
+                    self._progress.refresh()
+                except Exception:
+                    self._log.debug("Failed to refresh after start_stage.\n%s", traceback.format_exc())
 
     def advance_stage(self, file: Path, stage: str, advance: int = 1) -> None:
         """Advance a stage for a specific document.
@@ -281,6 +295,10 @@ class RichProgressReporter(ProgressReporter):
                 # If the task has a finite total, mark as complete; otherwise stop it.
                 if task.total is not None:
                     self._progress.update(task_id, completed=task.total)
+                try:
+                    self._progress.refresh()
+                except Exception:
+                    self._log.debug("Failed to refresh before stopping stage.\n%s", traceback.format_exc())
                 try:
                     self._progress.stop_task(task_id)
                 except Exception:
