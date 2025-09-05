@@ -77,6 +77,7 @@ from docling.document_converter import (
 from docling.models.factories import get_ocr_factory
 from docling.pipeline.asr_pipeline import AsrPipeline
 from docling.pipeline.vlm_pipeline import VlmPipeline
+from docling.utils.progress import NullProgressReporter, RichProgressReporter
 
 warnings.filterwarnings(action="ignore", category=UserWarning, module="pydantic|torch")
 warnings.filterwarnings(action="ignore", category=FutureWarning, module="easyocr")
@@ -486,6 +487,13 @@ def convert(  # noqa: C901
             help=f"Number of pages processed in one batch. Default: {settings.perf.page_batch_size}",
         ),
     ] = settings.perf.page_batch_size,
+    progress: Annotated[
+        bool,
+        typer.Option(
+            "--progress/--no-progress",
+            help="Show progress bars for documents and pipeline stages.",
+        ),
+    ] = False,
 ):
     log_format = "%(asctime)s\t%(levelname)s\t%(name)s: %(message)s"
 
@@ -704,9 +712,12 @@ def convert(  # noqa: C901
             pipeline_options.artifacts_path = artifacts_path
             # audio_pipeline_options.artifacts_path = artifacts_path
 
+        reporter = RichProgressReporter() if progress is True else NullProgressReporter()
+
         doc_converter = DocumentConverter(
             allowed_formats=from_formats,
             format_options=format_options,
+            progress_reporter=reporter,
         )
 
         start_time = time.time()

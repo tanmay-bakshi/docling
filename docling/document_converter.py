@@ -53,6 +53,7 @@ from docling.pipeline.base_pipeline import BasePipeline
 from docling.pipeline.simple_pipeline import SimplePipeline
 from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
 from docling.utils.utils import chunkify
+from docling.utils.progress import NullProgressReporter, ProgressReporter
 
 _log = logging.getLogger(__name__)
 _PIPELINE_CACHE_LOCK = threading.Lock()
@@ -184,6 +185,7 @@ class DocumentConverter:
         self,
         allowed_formats: Optional[List[InputFormat]] = None,
         format_options: Optional[Dict[InputFormat, FormatOption]] = None,
+        progress_reporter: Optional[ProgressReporter] = None,
     ):
         self.allowed_formats = (
             allowed_formats if allowed_formats is not None else list(InputFormat)
@@ -199,6 +201,9 @@ class DocumentConverter:
         self.initialized_pipelines: Dict[
             Tuple[Type[BasePipeline], str], BasePipeline
         ] = {}
+        self._progress_reporter: ProgressReporter = (
+            progress_reporter if progress_reporter is not None else NullProgressReporter()
+        )
 
     def _get_initialized_pipelines(
         self,
@@ -311,8 +316,15 @@ class DocumentConverter:
     ) -> Iterator[ConversionResult]:
         start_time = time.monotonic()
 
+        # Collect the list to know the total upfront for progress reporting
+        # Note: This consumes the iterator; we therefore re-yield via local list.
+        docs: list[InputDocument] = list(
+            chunk for chunk in conv_input.docs(self.format_to_options)
+        )
+        self._progress_reporter.start_run(total_docs=len(docs))
+
         for input_batch in chunkify(
-            conv_input.docs(self.format_to_options),
+            docs,
             settings.perf.doc_batch_size,  # pass format_options
         ):
             _log.info("Going to convert document batch...")
@@ -343,6 +355,7 @@ class DocumentConverter:
                         f"Finished converting document {item.input.file.name} in {elapsed:.2f} sec."
                     )
                     yield item
+        self._progress_reporter.end_run()
 
     def _get_pipeline(self, doc_format: InputFormat) -> Optional[BasePipeline]:
         """Retrieve or initialize a pipeline, reusing instances based on class and options."""
@@ -363,12 +376,19 @@ class DocumentConverter:
                 _log.info(
                     f"Initializing pipeline for {pipeline_class.__name__} with options hash {options_hash}"
                 )
-                self.initialized_pipelines[cache_key] = pipeline_class(
+                pipeline_instance = pipeline_class(
                     pipeline_options=pipeline_options
                 )
+                # Attach progress reporter to pipeline instance
+                pipeline_instance.set_progress_reporter(self._progress_reporter)
+                self.initialized_pipelines[cache_key] = pipeline_instance
             else:
                 _log.debug(
                     f"Reusing cached pipeline for {pipeline_class.__name__} with options hash {options_hash}"
+                )
+                # Ensure reporter is up-to-date on reused instances
+                self.initialized_pipelines[cache_key].set_progress_reporter(
+                    self._progress_reporter
                 )
 
             return self.initialized_pipelines[cache_key]
@@ -380,7 +400,11 @@ class DocumentConverter:
             self.allowed_formats is not None and in_doc.format in self.allowed_formats
         )
         if valid:
+            total_pages = in_doc.page_count if in_doc.page_count > 0 else None
+            self._progress_reporter.start_document(in_doc.file, total_pages)
             conv_res = self._execute_pipeline(in_doc, raises_on_error=raises_on_error)
+            self._progress_reporter.end_document(in_doc.file)
+            self._progress_reporter.advance_documents(advance=1)
         else:
             error_message = f"File format not allowed: {in_doc.file}"
             if raises_on_error:

@@ -24,6 +24,7 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions, PipelineOptio
 from docling.datamodel.settings import settings
 from docling.models.base_model import GenericEnrichmentModel
 from docling.utils.profiling import ProfilingScope, TimeRecorder
+from docling.utils.progress import NullProgressReporter, ProgressReporter
 from docling.utils.utils import chunkify
 
 _log = logging.getLogger(__name__)
@@ -35,6 +36,18 @@ class BasePipeline(ABC):
         self.keep_images = False
         self.build_pipe: List[Callable] = []
         self.enrichment_pipe: List[GenericEnrichmentModel[Any]] = []
+        self._progress_reporter: ProgressReporter = NullProgressReporter()
+
+    def set_progress_reporter(self, reporter: Optional[ProgressReporter]) -> None:
+        """Attach a progress reporter to the pipeline.
+
+        :param reporter: The reporter to attach. If None, a no-op reporter is used.
+        :returns: None
+        """
+        if reporter is None:
+            self._progress_reporter = NullProgressReporter()
+        else:
+            self._progress_reporter = reporter
 
     def execute(self, in_doc: InputDocument, raises_on_error: bool) -> ConversionResult:
         conv_res = ConversionResult(input=in_doc)
@@ -46,10 +59,32 @@ class BasePipeline(ABC):
             ):
                 # These steps are building and assembling the structure of the
                 # output DoclingDocument.
+                # Build stage
+                total_build_units = (
+                    in_doc.page_count if in_doc.page_count > 0 else 1
+                )
+                self._progress_reporter.start_stage(
+                    file=in_doc.file, stage="Build", total=total_build_units
+                )
                 conv_res = self._build_document(conv_res)
+                self._progress_reporter.end_stage(file=in_doc.file, stage="Build")
+
+                # Assemble stage
+                self._progress_reporter.start_stage(
+                    file=in_doc.file, stage="Assemble", total=1
+                )
                 conv_res = self._assemble_document(conv_res)
+                self._progress_reporter.end_stage(
+                    file=in_doc.file, stage="Assemble"
+                )
+
                 # From this stage, all operations should rely only on conv_res.output
+                # Enrich stage
+                self._progress_reporter.start_stage(
+                    file=in_doc.file, stage="Enrich", total=1
+                )
                 conv_res = self._enrich_document(conv_res)
+                self._progress_reporter.end_stage(file=in_doc.file, stage="Enrich")
                 conv_res.status = self._determine_status(conv_res)
         except Exception as e:
             conv_res.status = ConversionStatus.FAILURE
@@ -190,6 +225,12 @@ class PaginatedPipeline(BasePipeline):  # TODO this is a bad name.
                     total_pages_processed += len(page_batch)
                     _log.debug(
                         f"Finished converting pages {total_pages_processed}/{len(conv_res.pages)} time={end_batch_time:.3f}"
+                    )
+                    # Update progress for the Build stage
+                    self._progress_reporter.advance_stage(
+                        file=conv_res.input.file,
+                        stage="Build",
+                        advance=len(page_batch),
                     )
 
             except Exception as e:
