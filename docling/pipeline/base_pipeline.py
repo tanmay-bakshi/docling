@@ -184,13 +184,20 @@ class PaginatedPipeline(BasePipeline):  # TODO this is a bad name.
         self.keep_backend = False
 
     def _apply_on_pages(
-        self, conv_res: ConversionResult, page_batch: Iterable[Page]
+        self, conv_res: ConversionResult, page_batch: Iterable[Page], batch_ix: int
     ) -> Iterable[Page]:
+        """Apply the build pipeline models on a batch of pages with progress.
+
+        :param conv_res: The conversion result to update.
+        :param page_batch: Iterable of pages in the batch.
+        :param batch_ix: Zero-based batch index used for hierarchical stage names.
+        :returns: Iterator over processed pages.
+        """
         # Materialize current batch to know its size
         pages_list = list(page_batch)
         for model in self.build_pipe:
             model_name = type(model).__name__
-            stage_name = f"Build/{model_name}"
+            stage_name = f"Build/Batch{batch_ix + 1}/{model_name}"
             total_pages = len(pages_list)
             self._progress_reporter.start_stage(
                 file=conv_res.input.file, stage=stage_name, total=total_pages
@@ -227,6 +234,7 @@ class PaginatedPipeline(BasePipeline):  # TODO this is a bad name.
 
             try:
                 total_pages_processed = 0
+                batch_ix = 0
                 # Iterate batches of pages (page_batch_size) in the doc
                 for page_batch in chunkify(
                     conv_res.pages, settings.perf.page_batch_size
@@ -234,7 +242,7 @@ class PaginatedPipeline(BasePipeline):  # TODO this is a bad name.
                     start_batch_time = time.monotonic()
 
                     # 1. Initialise the page resources (report per page)
-                    stage_name = "Build/PageInit"
+                    stage_name = f"Build/Batch{batch_ix + 1}/PageInit"
                     self._progress_reporter.start_stage(
                         file=conv_res.input.file,
                         stage=stage_name,
@@ -250,8 +258,17 @@ class PaginatedPipeline(BasePipeline):  # TODO this is a bad name.
                     init_pages = map(_init_and_report, page_batch)
 
                     # 2. Run pipeline stages
-                    pipeline_pages = self._apply_on_pages(conv_res, init_pages)
+                    pipeline_pages = self._apply_on_pages(
+                        conv_res, init_pages, batch_ix=batch_ix
+                    )
 
+                    # 3. Finalize/cleanup per page in this batch
+                    finalize_stage = f"Build/Batch{batch_ix + 1}/Finalize"
+                    self._progress_reporter.start_stage(
+                        file=conv_res.input.file,
+                        stage=finalize_stage,
+                        total=len(page_batch),
+                    )
                     for p in pipeline_pages:  # Must exhaust!
                         # Cleanup cached images
                         if not self.keep_images:
@@ -266,12 +283,20 @@ class PaginatedPipeline(BasePipeline):  # TODO this is a bad name.
                         ):
                             del p.parsed_page
                             p.parsed_page = None
+                        # advance finalize stage
+                        self._progress_reporter.advance_stage(
+                            file=conv_res.input.file, stage=finalize_stage, advance=1
+                        )
 
                     end_batch_time = time.monotonic()
                     total_elapsed_time += end_batch_time - start_batch_time
                     # Page init stage completed by now
                     self._progress_reporter.end_stage(
                         file=conv_res.input.file, stage=stage_name
+                    )
+                    # Finalize stage completed
+                    self._progress_reporter.end_stage(
+                        file=conv_res.input.file, stage=finalize_stage
                     )
                     if (
                         self.pipeline_options.document_timeout is not None
@@ -292,6 +317,7 @@ class PaginatedPipeline(BasePipeline):  # TODO this is a bad name.
                         stage="Build",
                         advance=len(page_batch),
                     )
+                    batch_ix += 1
 
             except Exception as e:
                 conv_res.status = ConversionStatus.FAILURE
