@@ -418,6 +418,8 @@ class DocumentConverter:
                 conv_res = ConversionResult(
                     input=in_doc, status=ConversionStatus.SKIPPED, errors=[error_item]
                 )
+                # Advance documents counter also for skipped inputs to keep totals consistent
+                self._progress_reporter.advance_documents(advance=1)
 
         return conv_res
 

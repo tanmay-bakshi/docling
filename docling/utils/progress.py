@@ -4,7 +4,8 @@ import threading
 from abc import ABC, abstractmethod
 import logging
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Optional
+import traceback
 
 
 class ProgressReporter(ABC):
@@ -153,18 +154,28 @@ class RichProgressReporter(ProgressReporter):
             self._TaskProgressColumn(),
             self._TimeRemainingColumn(),
             expand=True,
+            transient=False,
         )
         self._run_task: Optional["TaskID"] = None
-        self._stage_tasks: Dict[Tuple[str, str], "TaskID"] = {}
+        self._stage_tasks: dict[tuple[str, str], "TaskID"] = {}
         self._lock = threading.Lock()
         self._started = False
 
     def _ensure_started(self) -> None:
+        """Ensure the underlying Rich progress renderer is started.
+
+        :returns: None
+        """
         if not self._started:
             self._progress.start()
             self._started = True
 
     def start_run(self, total_docs: int) -> None:
+        """Begin a conversion run.
+
+        :param total_docs: Total number of documents that will be processed.
+        :returns: None
+        """
         self._ensure_started()
         with self._lock:
             if self._run_task is None:
@@ -175,6 +186,12 @@ class RichProgressReporter(ProgressReporter):
                 )
 
     def end_run(self) -> None:
+        """Finish the conversion run and stop rendering.
+
+        The bars remain on screen because ``transient`` is disabled.
+
+        :returns: None
+        """
         with self._lock:
             if self._run_task is not None:
                 # Mark documents task complete if not already.
@@ -188,22 +205,29 @@ class RichProgressReporter(ProgressReporter):
                 self._started = False
 
     def start_document(self, file: Path, total_pages: Optional[int]) -> None:
+        """No-op for document start marker, stages show progress instead.
+
+        :param file: Path to the document.
+        :param total_pages: Optional page count for the document.
+        :returns: None
+        """
         # No separate document-level task beyond stages; nothing to do here.
         return None
 
     def end_document(self, file: Path) -> None:
-        # Remove stage tasks for this file to keep UI clean.
-        with self._lock:
-            keys_to_remove = [key for key in self._stage_tasks if key[0] == str(file)]
-            for key in keys_to_remove:
-                task_id = self._stage_tasks.pop(key)
-                try:
-                    self._progress.remove_task(task_id)
-                except Exception:
-                    # If already removed or invalid, log at debug level.
-                    self._log.debug("Failed to remove stage task", exc_info=True)
+        """Keep tasks on-screen; do not remove stage tasks to persist display.
+
+        :param file: Path to the document.
+        :returns: None
+        """
+        return None
 
     def advance_documents(self, advance: int = 1) -> None:
+        """Advance the overall documents progress.
+
+        :param advance: Number of documents completed.
+        :returns: None
+        """
         with self._lock:
             if self._run_task is not None:
                 self._progress.update(self._run_task, advance=advance)
@@ -211,6 +235,13 @@ class RichProgressReporter(ProgressReporter):
     def start_stage(
         self, file: Path, stage: str, total: Optional[int]
     ) -> None:
+        """Begin a stage for a specific document.
+
+        :param file: Path to the document.
+        :param stage: Stage label.
+        :param total: Total units for the stage or None for indeterminate.
+        :returns: None
+        """
         self._ensure_started()
         with self._lock:
             key = (str(file), stage)
@@ -222,6 +253,13 @@ class RichProgressReporter(ProgressReporter):
                 )
 
     def advance_stage(self, file: Path, stage: str, advance: int = 1) -> None:
+        """Advance a stage for a specific document.
+
+        :param file: Path to the document.
+        :param stage: Stage label.
+        :param advance: Units to advance by.
+        :returns: None
+        """
         with self._lock:
             key = (str(file), stage)
             task_id = self._stage_tasks.get(key)
@@ -229,6 +267,12 @@ class RichProgressReporter(ProgressReporter):
                 self._progress.update(task_id, advance=advance)
 
     def end_stage(self, file: Path, stage: str) -> None:
+        """Finish a stage for a specific document.
+
+        :param file: Path to the document.
+        :param stage: Stage label.
+        :returns: None
+        """
         with self._lock:
             key = (str(file), stage)
             task_id = self._stage_tasks.get(key)
@@ -240,5 +284,5 @@ class RichProgressReporter(ProgressReporter):
                 try:
                     self._progress.stop_task(task_id)
                 except Exception:
-                    # If stopping fails (e.g., already stopped), log at debug level.
-                    self._log.debug("Failed to stop stage task", exc_info=True)
+                    # If stopping fails (e.g., already stopped), log at debug level with stacktrace.
+                    self._log.debug("Failed to stop stage task.\n%s", traceback.format_exc())

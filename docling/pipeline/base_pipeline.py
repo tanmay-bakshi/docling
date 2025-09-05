@@ -4,7 +4,7 @@ import time
 import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from typing import Any, Callable, List
+from typing import Any, Callable, List, Optional
 
 from docling_core.types.doc import NodeItem
 
