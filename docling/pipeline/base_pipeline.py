@@ -199,6 +199,19 @@ class PaginatedPipeline(BasePipeline):  # TODO this is a bad name.
             model_name = type(model).__name__
             stage_name = f"Build/Batch{batch_ix + 1}/{model_name}"
             total_pages = len(pages_list)
+            # Provide model with deeper progress context if supported
+            set_ctx = getattr(model, "set_progress_context", None)
+            if callable(set_ctx):
+                try:
+                    set_ctx(self._progress_reporter, conv_res.input.file, batch_ix)
+                except Exception as exc:
+                    # Do not break pipeline if a model doesn't accept context
+                    import traceback as _tb
+                    _log.debug(
+                        "Failed to set progress context on %s.\n%s",
+                        model_name,
+                        _tb.format_exc(),
+                    )
             self._progress_reporter.start_stage(
                 file=conv_res.input.file, stage=stage_name, total=total_pages
             )
