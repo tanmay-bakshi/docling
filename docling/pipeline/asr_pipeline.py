@@ -244,7 +244,14 @@ class AsrPipeline(BasePipeline):
     def _build_document(self, conv_res: ConversionResult) -> ConversionResult:
         _log.info(f"start _build_document in AsrPipeline: {conv_res.input.file}")
         with TimeRecorder(conv_res, "doc_build", scope=ProfilingScope.DOCUMENT):
+            model_name = type(self._model).__name__ if self._model is not None else "Model"
+            self._progress_reporter.start_stage(
+                file=conv_res.input.file, stage=f"Build/{model_name}", total=1
+            )
             self._model.run(conv_res=conv_res)
+            self._progress_reporter.end_stage(
+                file=conv_res.input.file, stage=f"Build/{model_name}"
+            )
 
         return conv_res
 

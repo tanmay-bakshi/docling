@@ -186,29 +186,80 @@ class StandardPdfPipeline(PaginatedPipeline):
         all_body = []
 
         with TimeRecorder(conv_res, "doc_assemble", scope=ProfilingScope.DOCUMENT):
+            # Assemble/CollectElements
+            collect_total = 0
+            for p in conv_res.pages:
+                if p.assembled is not None:
+                    collect_total += len(p.assembled.body)
+                    collect_total += len(p.assembled.headers)
+                    collect_total += len(p.assembled.elements)
+
+            self._progress_reporter.start_stage(
+                file=conv_res.input.file,
+                stage="Assemble/CollectElements",
+                total=collect_total if collect_total > 0 else None,
+            )
             for p in conv_res.pages:
                 if p.assembled is not None:
                     for el in p.assembled.body:
                         all_body.append(el)
+                        self._progress_reporter.advance_stage(
+                            file=conv_res.input.file,
+                            stage="Assemble/CollectElements",
+                            advance=1,
+                        )
                     for el in p.assembled.headers:
                         all_headers.append(el)
+                        self._progress_reporter.advance_stage(
+                            file=conv_res.input.file,
+                            stage="Assemble/CollectElements",
+                            advance=1,
+                        )
                     for el in p.assembled.elements:
                         all_elements.append(el)
+                        self._progress_reporter.advance_stage(
+                            file=conv_res.input.file,
+                            stage="Assemble/CollectElements",
+                            advance=1,
+                        )
+            self._progress_reporter.end_stage(
+                file=conv_res.input.file, stage="Assemble/CollectElements"
+            )
 
             conv_res.assembled = AssembledUnit(
                 elements=all_elements, headers=all_headers, body=all_body
             )
 
+            # Assemble/ReadingOrder
+            self._progress_reporter.start_stage(
+                file=conv_res.input.file, stage="Assemble/ReadingOrder", total=1
+            )
             conv_res.document = self.reading_order_model(conv_res)
+            self._progress_reporter.end_stage(
+                file=conv_res.input.file, stage="Assemble/ReadingOrder"
+            )
 
             # Generate page images in the output
             if self.pipeline_options.generate_page_images:
+                self._progress_reporter.start_stage(
+                    file=conv_res.input.file,
+                    stage="Assemble/GeneratePageImages",
+                    total=len(conv_res.pages),
+                )
                 for page in conv_res.pages:
                     assert page.image is not None
                     page_no = page.page_no + 1
                     conv_res.document.pages[page_no].image = ImageRef.from_pil(
                         page.image, dpi=int(72 * self.pipeline_options.images_scale)
                     )
+                    self._progress_reporter.advance_stage(
+                        file=conv_res.input.file,
+                        stage="Assemble/GeneratePageImages",
+                        advance=1,
+                    )
+                self._progress_reporter.end_stage(
+                    file=conv_res.input.file, stage="Assemble/GeneratePageImages"
+                )
 
             # Generate images of the requested element types
             with warnings.catch_warnings():  # deprecated generate_table_images
@@ -217,6 +268,25 @@ class StandardPdfPipeline(PaginatedPipeline):
                     self.pipeline_options.generate_picture_images
                     or self.pipeline_options.generate_table_images
                 ):
+                    # Count elements to be imaged
+                    image_items_total = 0
+                    for element, _level in conv_res.document.iterate_items():
+                        if not isinstance(element, DocItem) or len(element.prov) == 0:
+                            continue
+                        if (
+                            isinstance(element, PictureItem)
+                            and self.pipeline_options.generate_picture_images
+                        ) or (
+                            isinstance(element, TableItem)
+                            and self.pipeline_options.generate_table_images
+                        ):
+                            image_items_total += 1
+
+                    self._progress_reporter.start_stage(
+                        file=conv_res.input.file,
+                        stage="Assemble/GenerateElementImages",
+                        total=image_items_total if image_items_total > 0 else None,
+                    )
                     scale = self.pipeline_options.images_scale
                     for element, _level in conv_res.document.iterate_items():
                         if not isinstance(element, DocItem) or len(element.prov) == 0:
@@ -249,9 +319,20 @@ class StandardPdfPipeline(PaginatedPipeline):
                             element.image = ImageRef.from_pil(
                                 cropped_im, dpi=int(72 * scale)
                             )
+                            self._progress_reporter.advance_stage(
+                                file=conv_res.input.file,
+                                stage="Assemble/GenerateElementImages",
+                                advance=1,
+                            )
+                    self._progress_reporter.end_stage(
+                        file=conv_res.input.file, stage="Assemble/GenerateElementImages"
+                    )
 
             # Aggregate confidence values for document:
             if len(conv_res.pages) > 0:
+                self._progress_reporter.start_stage(
+                    file=conv_res.input.file, stage="Assemble/AggregateConfidence", total=1
+                )
                 with warnings.catch_warnings():
                     warnings.filterwarnings(
                         "ignore",
@@ -279,6 +360,9 @@ class StandardPdfPipeline(PaginatedPipeline):
                             [c.ocr_score for c in conv_res.confidence.pages.values()]
                         )
                     )
+                self._progress_reporter.end_stage(
+                    file=conv_res.input.file, stage="Assemble/AggregateConfidence"
+                )
 
         return conv_res
 

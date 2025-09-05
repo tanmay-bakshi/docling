@@ -147,22 +147,41 @@ class VlmPipeline(PaginatedPipeline):
 
     def _assemble_document(self, conv_res: ConversionResult) -> ConversionResult:
         with TimeRecorder(conv_res, "doc_assemble", scope=ProfilingScope.DOCUMENT):
+            # Assemble/TurnDoc/*
             if (
                 self.pipeline_options.vlm_options.response_format
                 == ResponseFormat.DOCTAGS
             ):
+                self._progress_reporter.start_stage(
+                    file=conv_res.input.file, stage="Assemble/TurnDoc/Doctags", total=1
+                )
                 conv_res.document = self._turn_dt_into_doc(conv_res)
+                self._progress_reporter.end_stage(
+                    file=conv_res.input.file, stage="Assemble/TurnDoc/Doctags"
+                )
 
             elif (
                 self.pipeline_options.vlm_options.response_format
                 == ResponseFormat.MARKDOWN
             ):
+                self._progress_reporter.start_stage(
+                    file=conv_res.input.file, stage="Assemble/TurnDoc/Markdown", total=1
+                )
                 conv_res.document = self._turn_md_into_doc(conv_res)
+                self._progress_reporter.end_stage(
+                    file=conv_res.input.file, stage="Assemble/TurnDoc/Markdown"
+                )
 
             elif (
                 self.pipeline_options.vlm_options.response_format == ResponseFormat.HTML
             ):
+                self._progress_reporter.start_stage(
+                    file=conv_res.input.file, stage="Assemble/TurnDoc/HTML", total=1
+                )
                 conv_res.document = self._turn_html_into_doc(conv_res)
+                self._progress_reporter.end_stage(
+                    file=conv_res.input.file, stage="Assemble/TurnDoc/HTML"
+                )
 
             else:
                 raise RuntimeError(
@@ -171,6 +190,22 @@ class VlmPipeline(PaginatedPipeline):
 
             # Generate images of the requested element types
             if self.pipeline_options.generate_picture_images:
+                # Count predicted pictures
+                total_pictures = 0
+                for element, _level in conv_res.document.iterate_items():
+                    if not isinstance(element, DocItem) or len(element.prov) == 0:
+                        continue
+                    if (
+                        isinstance(element, PictureItem)
+                        and self.pipeline_options.generate_picture_images
+                    ):
+                        total_pictures += 1
+
+                self._progress_reporter.start_stage(
+                    file=conv_res.input.file,
+                    stage="Assemble/GenerateElementImages",
+                    total=total_pictures if total_pictures > 0 else None,
+                )
                 scale = self.pipeline_options.images_scale
                 for element, _level in conv_res.document.iterate_items():
                     if not isinstance(element, DocItem) or len(element.prov) == 0:
@@ -194,6 +229,14 @@ class VlmPipeline(PaginatedPipeline):
                         element.image = ImageRef.from_pil(
                             cropped_im, dpi=int(72 * scale)
                         )
+                        self._progress_reporter.advance_stage(
+                            file=conv_res.input.file,
+                            stage="Assemble/GenerateElementImages",
+                            advance=1,
+                        )
+                self._progress_reporter.end_stage(
+                    file=conv_res.input.file, stage="Assemble/GenerateElementImages"
+                )
 
         return conv_res
 

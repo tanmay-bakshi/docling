@@ -113,16 +113,44 @@ class BasePipeline(ABC):
                 if prepared_element is not None:
                     yield prepared_element
 
+        def _count_prepared_elements(
+            conv_res: ConversionResult, model: GenericEnrichmentModel[Any]
+        ) -> int:
+            count = 0
+            for doc_element, _level in conv_res.document.iterate_items():
+                prepared_element = model.prepare_element(
+                    conv_res=conv_res, element=doc_element
+                )
+                if prepared_element is not None:
+                    count += 1
+            return count
+
         with TimeRecorder(conv_res, "doc_enrich", scope=ProfilingScope.DOCUMENT):
             for model in self.enrichment_pipe:
+                model_name = type(model).__name__
+                total_elements = _count_prepared_elements(conv_res, model)
+                self._progress_reporter.start_stage(
+                    file=conv_res.input.file,
+                    stage=f"Enrich/{model_name}",
+                    total=total_elements if total_elements > 0 else None,
+                )
                 for element_batch in chunkify(
                     _prepare_elements(conv_res, model),
                     model.elements_batch_size,
                 ):
-                    for element in model(
+                    for _ in model(
                         doc=conv_res.document, element_batch=element_batch
                     ):  # Must exhaust!
                         pass
+                    # advance by the batch size processed
+                    self._progress_reporter.advance_stage(
+                        file=conv_res.input.file,
+                        stage=f"Enrich/{model_name}",
+                        advance=len(element_batch),
+                    )
+                self._progress_reporter.end_stage(
+                    file=conv_res.input.file, stage=f"Enrich/{model_name}"
+                )
 
         return conv_res
 
@@ -158,10 +186,27 @@ class PaginatedPipeline(BasePipeline):  # TODO this is a bad name.
     def _apply_on_pages(
         self, conv_res: ConversionResult, page_batch: Iterable[Page]
     ) -> Iterable[Page]:
+        # Materialize current batch to know its size
+        pages_list = list(page_batch)
         for model in self.build_pipe:
-            page_batch = model(conv_res, page_batch)
+            model_name = type(model).__name__
+            stage_name = f"Build/{model_name}"
+            total_pages = len(pages_list)
+            self._progress_reporter.start_stage(
+                file=conv_res.input.file, stage=stage_name, total=total_pages
+            )
+            out_pages: List[Page] = []
+            for p in model(conv_res, pages_list):
+                out_pages.append(p)
+                self._progress_reporter.advance_stage(
+                    file=conv_res.input.file, stage=stage_name, advance=1
+                )
+            self._progress_reporter.end_stage(
+                file=conv_res.input.file, stage=stage_name
+            )
+            pages_list = out_pages
 
-        yield from page_batch
+        yield from pages_list
 
     def _build_document(self, conv_res: ConversionResult) -> ConversionResult:
         if not isinstance(conv_res.input._backend, PaginatedDocumentBackend):
@@ -188,10 +233,21 @@ class PaginatedPipeline(BasePipeline):  # TODO this is a bad name.
                 ):
                     start_batch_time = time.monotonic()
 
-                    # 1. Initialise the page resources
-                    init_pages = map(
-                        functools.partial(self.initialize_page, conv_res), page_batch
+                    # 1. Initialise the page resources (report per page)
+                    stage_name = "Build/PageInit"
+                    self._progress_reporter.start_stage(
+                        file=conv_res.input.file,
+                        stage=stage_name,
+                        total=len(page_batch),
                     )
+                    def _init_and_report(page: Page) -> Page:
+                        result = self.initialize_page(conv_res, page)
+                        self._progress_reporter.advance_stage(
+                            file=conv_res.input.file, stage=stage_name, advance=1
+                        )
+                        return result
+
+                    init_pages = map(_init_and_report, page_batch)
 
                     # 2. Run pipeline stages
                     pipeline_pages = self._apply_on_pages(conv_res, init_pages)
@@ -213,6 +269,10 @@ class PaginatedPipeline(BasePipeline):  # TODO this is a bad name.
 
                     end_batch_time = time.monotonic()
                     total_elapsed_time += end_batch_time - start_batch_time
+                    # Page init stage completed by now
+                    self._progress_reporter.end_stage(
+                        file=conv_res.input.file, stage=stage_name
+                    )
                     if (
                         self.pipeline_options.document_timeout is not None
                         and total_elapsed_time > self.pipeline_options.document_timeout

@@ -37,7 +37,13 @@ class SimplePipeline(BasePipeline):
         # the backend is expected to be of type DeclarativeDocumentBackend, which can output
         # a DoclingDocument straight.
         with TimeRecorder(conv_res, "doc_build", scope=ProfilingScope.DOCUMENT):
+            self._progress_reporter.start_stage(
+                file=conv_res.input.file, stage="Build/BackendConvert", total=1
+            )
             conv_res.document = conv_res.input._backend.convert()
+            self._progress_reporter.end_stage(
+                file=conv_res.input.file, stage="Build/BackendConvert"
+            )
         return conv_res
 
     def _determine_status(self, conv_res: ConversionResult) -> ConversionStatus:
